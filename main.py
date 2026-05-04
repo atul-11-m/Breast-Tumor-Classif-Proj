@@ -13,9 +13,12 @@ from sklearn.model_selection import (
     train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
 )
 from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import f_classif
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     confusion_matrix, roc_curve, auc, classification_report
@@ -47,7 +50,7 @@ print(f"\nMissing values: {df.isnull().sum().sum()}") #dataset should be clean, 
 print("\nHead:")
 print(df.head())
 
-# data analysis before preprocessing
+# data analysis and visualization before preprocessing
 
 # encode labels: M=1 for malignant, B=0 for benign
 df['diagnosis'] = df['diagnosis'].map({'M': 1, 'B': 0})
@@ -72,7 +75,7 @@ X_test_scaled = scaler.transform(X_test)
 
 # train and evaluate multiple models (with hyperparameter tuning for main ones)
 
-# hyperparameter tuning via GridSearchCV (on training set) ---
+# --- 4a. Hyperparameter tuning via GridSearchCV (on training set) ---
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
 print("\n=== Hyperparameter Tuning (GridSearchCV, 5-fold CV) ===")
@@ -96,22 +99,35 @@ svm_grid = GridSearchCV(SVC(kernel='rbf', probability=True, random_state=42),
 svm_grid.fit(X_train_scaled, y_train)
 print(f"  SVM best params                : {svm_grid.best_params_}")
 
+gb_params = {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1],
+             'max_depth': [3, 5]}
+gb_grid = GridSearchCV(GradientBoostingClassifier(random_state=42),
+                       gb_params, cv=cv, scoring='recall', n_jobs=-1)
+gb_grid.fit(X_train_scaled, y_train)
+print(f"  Gradient Boosting best params  : {gb_grid.best_params_}")
 
-# all models
+# --- 4b. All models (tuned + additional) ---
 models = {
     'Logistic Regression': lr_grid.best_estimator_,
     'Random Forest':       rf_grid.best_estimator_,
     'SVM':                 svm_grid.best_estimator_,
+    'Gradient Boosting':   gb_grid.best_estimator_,
+    'KNN':                 KNeighborsClassifier(n_neighbors=5),
+    'Decision Tree':       DecisionTreeClassifier(max_depth=5, random_state=42),
 }
 
+# Fit models not yet fit (KNN, DT)
+for name in ['KNN', 'Decision Tree']:
+    models[name].fit(X_train_scaled, y_train)
 
 results = {}
 for name, model in models.items():
     y_pred = model.predict(X_test_scaled)
     y_prob = model.predict_proba(X_test_scaled)[:, 1]
     fpr, tpr, _ = roc_curve(y_test, y_prob)
-    # cross-validation on full scaled data
-    cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=cv, scoring='recall')
+    # 5-fold cross-validation on full scaled data
+    cv_scores = cross_val_score(model, X_train_scaled, y_train,
+                                cv=cv, scoring='recall')
     results[name] = {
         'model':     model,
         'y_pred':    y_pred,
@@ -129,7 +145,7 @@ for name, model in models.items():
 
 # evaluate all models
 
-print("\n=== Model Performance (Test Set + 5-Fold CV Recall) ===")
+print("\n Model Performance (Test Set + 5-Fold CV Recall)")
 print(f"{'Model':<22} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>8} {'AUC':>8} {'CV Recall':>12}")
 print("-" * 84)
 for name, r in results.items():
@@ -164,6 +180,7 @@ for i, (name, r) in enumerate(results.items()):
 plt.tight_layout()
 plt.savefig('confusion_matrices.png', dpi=150)
 plt.show()
+print("Saved: confusion_matrices.png")
 
 # ROC curves — all models
 fig, ax = plt.subplots(figsize=(9, 7))
@@ -180,9 +197,26 @@ plt.savefig('roc_curves.png', dpi=150)
 plt.show()
 print("Saved: roc_curves.png")
 
+# Cross-validation recall comparison bar chart
+fig, ax = plt.subplots(figsize=(10, 5))
+names = list(results.keys())
+cv_means = [results[n]['cv_recall_mean'] for n in names]
+cv_stds  = [results[n]['cv_recall_std']  for n in names]
+bars = ax.bar(range(len(names)), cv_means, yerr=cv_stds, capsize=5,
+              color='steelblue', alpha=0.8)
+ax.set_ylim([0.85, 1.01])
+ax.set_ylabel('CV Recall (mean ± std)')
+ax.set_title('5-Fold Cross-Validation Recall — All Models')
+ax.set_xticks(range(len(names)))
+ax.set_xticklabels(names, rotation=15, ha='right')
+for bar, val in zip(bars, cv_means):
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.003,
+            f'{val:.3f}', ha='center', fontsize=9, fontweight='bold')
+plt.tight_layout()
+plt.savefig('cv_recall_comparison.png', dpi=150)
+plt.show()
 
 # random forest feature importance (only doing for RF since it's the most interpretable model and has built-in feature importance)
-
 rf_model = results['Random Forest']['model']
 importances = pd.Series(rf_model.feature_importances_, index=feature_names)
 top20 = importances.sort_values(ascending=False).head(20)
@@ -197,10 +231,9 @@ plt.show()
 print("Saved: feature_importance.png")
 
 #  summary statistics and insights
-
 # Best by CV recall (more reliable than single split)
 best_model_name = max(results, key=lambda n: results[n]['cv_recall_mean'])
-print(f"\n Best Model by CV Recall ")
+print(f"\n=== Best Model by CV Recall ===")
 print(f"  {best_model_name}")
 print(f"  Accuracy : {results[best_model_name]['accuracy']:.3f}")
 print(f"  Precision: {results[best_model_name]['precision']:.3f}")
