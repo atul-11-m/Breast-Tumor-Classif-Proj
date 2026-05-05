@@ -9,6 +9,7 @@ Goal: Classify tumors as Malignant (M) or Benign (B) using machine learning.
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.base import clone
 from sklearn.model_selection import (
     train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
 )
@@ -122,26 +123,33 @@ X_test_scaled = scaler.transform(X_test)
 
 # feature engineering: PCA + SelectKBest
 
-# use pca reduce to top 10 features since many features are highly correlated as seen in the correlation heatmap; imp b/c some models fit better with fewer features and can be compared to fit against full feature set
+# PCA: reduce to top 10 components (captures most variance while reducing dimensionality)
 pca = PCA(n_components=10, random_state=42)
 X_train_pca = pca.fit_transform(X_train_scaled)
 X_test_pca  = pca.transform(X_test_scaled)
-print(f"  Cumulative PCA variance: {pca.explained_variance_ratio_.sum():.3f}")
+print(f"  Cumulative PCA variance explained: {pca.explained_variance_ratio_.sum():.3f}")
 
-# SelectKBest: keep top 15 features by using ANOVA F-score
+# SelectKBest: keep top 15 features by ANOVA F-score
 selector = SelectKBest(f_classif, k=15)
 X_train_kbest = selector.fit_transform(X_train_scaled, y_train)
 X_test_kbest  = selector.transform(X_test_scaled)
 selected_features = [feature_names[i] for i in selector.get_support(indices=True)]
-print(f"\n Top 15 Features via SelectKBest: ")
+print(f"\n  Top 15 Features via SelectKBest:")
 print("  " + ", ".join(selected_features))
+
+# bundle feature sets for iteration
+feature_sets = {
+    'Full':    (X_train_scaled, X_test_scaled),
+    'PCA':     (X_train_pca,    X_test_pca),
+    'KBest':   (X_train_kbest,  X_test_kbest),
+}
 
 # train and evaluate multiple models (with hyperparameter tuning for main ones)
 
-# --- 4a. Hyperparameter tuning via GridSearchCV (on training set) ---
+# hyperparameter tuning via GridSearchCV (on training set) 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-print("\n=== Hyperparameter Tuning (GridSearchCV, 5-fold CV) ===")
+print("\nHyperparameter Tuning (GridSearchCV, 5-fold CV on Full feature set)")
 
 lr_params = {'C': [0.01, 0.1, 1, 10, 100]}
 lr_grid = GridSearchCV(LogisticRegression(max_iter=10000, random_state=42),
@@ -169,8 +177,8 @@ gb_grid = GridSearchCV(GradientBoostingClassifier(random_state=42),
 gb_grid.fit(X_train_scaled, y_train)
 print(f"  Gradient Boosting best params  : {gb_grid.best_params_}")
 
-# --- 4b. All models (tuned + additional) ---
-models = {
+# base model definitions (best tuned params from full-set grid search) 
+base_models = {
     'Logistic Regression': lr_grid.best_estimator_,
     'Random Forest':       rf_grid.best_estimator_,
     'SVM':                 svm_grid.best_estimator_,
@@ -179,137 +187,163 @@ models = {
     'Decision Tree':       DecisionTreeClassifier(max_depth=5, random_state=42),
 }
 
-# Fit models not yet fit (KNN, DT)
-for name in ['KNN', 'Decision Tree']:
-    models[name].fit(X_train_scaled, y_train)
+#  train and evaluate every model on every feature set
+# results dict: results[feature_set][model_name]
+results = {fs: {} for fs in feature_sets}
 
-results = {}
-for name, model in models.items():
-    y_pred = model.predict(X_test_scaled)
-    y_prob = model.predict_proba(X_test_scaled)[:, 1]
-    fpr, tpr, _ = roc_curve(y_test, y_prob)
-    # 5-fold cross-validation on full scaled data
-    cv_scores = cross_val_score(model, X_train_scaled, y_train,
-                                cv=cv, scoring='recall')
-    results[name] = {
-        'model':     model,
-        'y_pred':    y_pred,
-        'y_prob':    y_prob,
-        'accuracy':  accuracy_score(y_test, y_pred),
-        'precision': precision_score(y_test, y_pred),
-        'recall':    recall_score(y_test, y_pred),
-        'f1':        f1_score(y_test, y_pred),
-        'fpr':       fpr,
-        'tpr':       tpr,
-        'auc':       auc(fpr, tpr),
-        'cv_recall_mean': cv_scores.mean(),
-        'cv_recall_std':  cv_scores.std(),
-    }
+for fs_name, (X_tr, X_te) in feature_sets.items():
+    print(f"\nTraining on feature set: {fs_name}")
+    for name, base_model in base_models.items():
+        model = clone(base_model)  # fresh copy so fits don't bleed across feature sets
+        model.fit(X_tr, y_train)
+        y_pred = model.predict(X_te)
+        y_prob = model.predict_proba(X_te)[:, 1]
+        fpr, tpr, _ = roc_curve(y_test, y_prob)
+        cv_scores = cross_val_score(model, X_tr, y_train, cv=cv, scoring='recall')
+        results[fs_name][name] = {
+            'model':          model,
+            'y_pred':         y_pred,
+            'y_prob':         y_prob,
+            'accuracy':       accuracy_score(y_test, y_pred),
+            'precision':      precision_score(y_test, y_pred),
+            'recall':         recall_score(y_test, y_pred),
+            'f1':             f1_score(y_test, y_pred),
+            'fpr':            fpr,
+            'tpr':            tpr,
+            'auc':            auc(fpr, tpr),
+            'cv_recall_mean': cv_scores.mean(),
+            'cv_recall_std':  cv_scores.std(),
+        }
+        print(f"  {name:<22} recall={results[fs_name][name]['recall']:.3f}  "
+              f"auc={results[fs_name][name]['auc']:.3f}  "
+              f"cv_recall={cv_scores.mean():.3f}±{cv_scores.std():.3f}")
 
-# ── 5. EVALUATION ─────────────────────────────────────────────────────────────
+# evaluate all models
 
-print("\n=== Model Performance (Test Set + 5-Fold CV Recall) ===")
-print(f"{'Model':<22} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>8} {'AUC':>8} {'CV Recall':>12}")
-print("-" * 84)
-for name, r in results.items():
-    print(f"{name:<22} {r['accuracy']:>10.3f} {r['precision']:>10.3f} "
-          f"{r['recall']:>10.3f} {r['f1']:>8.3f} {r['auc']:>8.3f} "
-          f"  {r['cv_recall_mean']:.3f}±{r['cv_recall_std']:.3f}")
+for fs_name in feature_sets:
+    print(f"\nModel Performance — {fs_name} (Test Set + 5-Fold CV Recall)")
+    print(f"{'Model':<22} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>8} {'AUC':>8} {'CV Recall':>12}")
+    print("-" * 84)
+    for name, r in results[fs_name].items():
+        print(f"{name:<22} {r['accuracy']:>10.3f} {r['precision']:>10.3f} "
+              f"{r['recall']:>10.3f} {r['f1']:>8.3f} {r['auc']:>8.3f} "
+              f"  {r['cv_recall_mean']:.3f}±{r['cv_recall_std']:.3f}")
 
 print()
-for name, r in results.items():
-    print(f"\n--- {name} ---")
-    print(classification_report(y_test, r['y_pred'],
-                                 target_names=['Benign', 'Malignant']))
+for fs_name in feature_sets:
+    for name, r in results[fs_name].items():
+        print(f"\n{name} [{fs_name}]")
+        print(classification_report(y_test, r['y_pred'],
+                                    target_names=['Benign', 'Malignant']))
 
-# ── 6. VISUALIZATION: Confusion Matrices + ROC Curves ────────────────────────
 
-# Confusion matrices (2 rows × 3 cols for 6 models)
-fig, axes = plt.subplots(2, 3, figsize=(16, 10))
-axes = axes.flatten()
-for i, (name, r) in enumerate(results.items()):
-    ax = axes[i]
-    cm = confusion_matrix(y_test, r['y_pred'])
-    im = ax.imshow(cm, cmap='Blues')
-    ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
-    ax.set_xticklabels(['Benign', 'Malignant'])
-    ax.set_yticklabels(['Benign', 'Malignant'])
-    ax.set_xlabel('Predicted'); ax.set_ylabel('Actual')
-    ax.set_title(f'{name}\nAcc={r["accuracy"]:.3f}  Recall={r["recall"]:.3f}')
-    for row in range(2):
-        for col in range(2):
-            ax.text(col, row, str(cm[row, col]),
-                    ha='center', va='center', fontsize=13, fontweight='bold',
-                    color='white' if cm[row, col] > cm.max() / 2 else 'black')
+model_names = list(base_models.keys())
+fs_names    = list(feature_sets.keys())
+
+# visualize model results
+# confusion matrices (2 rows × 3 cols for 6 models)
+fig, axes = plt.subplots(len(fs_names), len(model_names),
+                         figsize=(24, 12))
+for row, fs_name in enumerate(fs_names):
+    for col, name in enumerate(model_names):
+        ax = axes[row][col]
+        r  = results[fs_name][name]
+        cm = confusion_matrix(y_test, r['y_pred'])
+        im = ax.imshow(cm, cmap='Blues')
+        ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
+        ax.set_xticklabels(['Benign', 'Mal.'], fontsize=7)
+        ax.set_yticklabels(['Benign', 'Mal.'], fontsize=7)
+        ax.set_xlabel('Predicted', fontsize=7); ax.set_ylabel('Actual', fontsize=7)
+        ax.set_title(f'{name}\n[{fs_name}] Acc={r["accuracy"]:.2f} Rec={r["recall"]:.2f}',
+                     fontsize=8)
+        for rr in range(2):
+            for cc in range(2):
+                ax.text(cc, rr, str(cm[rr, cc]),
+                        ha='center', va='center', fontsize=11, fontweight='bold',
+                        color='white' if cm[rr, cc] > cm.max() / 2 else 'black')
 plt.tight_layout()
 plt.savefig('confusion_matrices.png', dpi=150)
 plt.show()
 print("Saved: confusion_matrices.png")
 
-# ROC curves — all models
-fig, ax = plt.subplots(figsize=(9, 7))
+# ROC curves — one subplot per feature set
+fig, axes = plt.subplots(1, len(fs_names), figsize=(18, 6), sharey=True)
 plot_colors = ['steelblue', 'darkorange', 'green', 'purple', 'brown', 'crimson']
-for (name, r), color in zip(results.items(), plot_colors):
-    ax.plot(r['fpr'], r['tpr'], color=color, lw=2,
-            label=f'{name} (AUC = {r["auc"]:.3f})')
-ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random Classifier')
-ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
-ax.set_xlabel('False Positive Rate'); ax.set_ylabel('True Positive Rate')
-ax.set_title('ROC Curves — All Models'); ax.legend(loc='lower right')
+for ax, fs_name in zip(axes, fs_names):
+    for name, color in zip(model_names, plot_colors):
+        r = results[fs_name][name]
+        ax.plot(r['fpr'], r['tpr'], color=color, lw=2,
+                label=f'{name} (AUC={r["auc"]:.3f})')
+    ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
+    ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
+    ax.set_xlabel('False Positive Rate')
+    ax.set_title(f'ROC Curves — {fs_name}')
+    ax.legend(loc='lower right', fontsize=7)
+axes[0].set_ylabel('True Positive Rate')
 plt.tight_layout()
 plt.savefig('roc_curves.png', dpi=150)
 plt.show()
 print("Saved: roc_curves.png")
 
-# Cross-validation recall comparison bar chart
-fig, ax = plt.subplots(figsize=(10, 5))
-names = list(results.keys())
-cv_means = [results[n]['cv_recall_mean'] for n in names]
-cv_stds  = [results[n]['cv_recall_std']  for n in names]
-bars = ax.bar(range(len(names)), cv_means, yerr=cv_stds, capsize=5,
-              color='steelblue', alpha=0.8)
-ax.set_ylim([0.85, 1.01])
+# CV Recall comparison: grouped bar chart (models × feature sets)
+fig, ax = plt.subplots(figsize=(13, 6))
+x      = np.arange(len(model_names))
+width  = 0.25
+fs_colors = ['steelblue', 'darkorange', 'green']
+for i, (fs_name, color) in enumerate(zip(fs_names, fs_colors)):
+    means = [results[fs_name][n]['cv_recall_mean'] for n in model_names]
+    stds  = [results[fs_name][n]['cv_recall_std']  for n in model_names]
+    bars  = ax.bar(x + i * width, means, width, yerr=stds, capsize=4,
+                   label=fs_name, color=color, alpha=0.85)
+    for bar, val in zip(bars, means):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.004,
+                f'{val:.3f}', ha='center', fontsize=7, fontweight='bold')
+ax.set_ylim([0.82, 1.02])
 ax.set_ylabel('CV Recall (mean ± std)')
-ax.set_title('5-Fold Cross-Validation Recall — All Models')
-ax.set_xticks(range(len(names)))
-ax.set_xticklabels(names, rotation=15, ha='right')
-for bar, val in zip(bars, cv_means):
-    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.003,
-            f'{val:.3f}', ha='center', fontsize=9, fontweight='bold')
+ax.set_title('5-Fold CV Recall — All Models × Feature Sets')
+ax.set_xticks(x + width)
+ax.set_xticklabels(model_names, rotation=15, ha='right')
+ax.legend(title='Feature Set')
 plt.tight_layout()
 plt.savefig('cv_recall_comparison.png', dpi=150)
 plt.show()
 print("Saved: cv_recall_comparison.png")
 
-# ── 7. FEATURE IMPORTANCE (Random Forest) ────────────────────────────────────
+# random forest feature importance (only doing for RF since it's the most interpretable model and has built-in feature importance)
 
-rf_model = results['Random Forest']['model']
+rf_model = results['Full']['Random Forest']['model']
 importances = pd.Series(rf_model.feature_importances_, index=feature_names)
 top20 = importances.sort_values(ascending=False).head(20)
 
 fig, ax = plt.subplots(figsize=(10, 7))
 top20.sort_values().plot(kind='barh', color='steelblue', ax=ax)
-ax.set_title('Top 20 Feature Importances (Random Forest)')
+ax.set_title('Top 20 Feature Importances (Random Forest — Full)')
 ax.set_xlabel('Importance Score')
 plt.tight_layout()
 plt.savefig('feature_importance.png', dpi=150)
 plt.show()
 print("Saved: feature_importance.png")
 
-# ── 8. SUMMARY ────────────────────────────────────────────────────────────────
+#  summary statistics and insights
 
-# Best by CV recall (more reliable than single split)
-best_model_name = max(results, key=lambda n: results[n]['cv_recall_mean'])
-print(f"\n=== Best Model by CV Recall ===")
-print(f"  {best_model_name}")
-print(f"  Accuracy : {results[best_model_name]['accuracy']:.3f}")
-print(f"  Precision: {results[best_model_name]['precision']:.3f}")
-print(f"  Recall   : {results[best_model_name]['recall']:.3f}")
-print(f"  F1       : {results[best_model_name]['f1']:.3f}")
-print(f"  AUC      : {results[best_model_name]['auc']:.3f}")
-print(f"  CV Recall: {results[best_model_name]['cv_recall_mean']:.3f} "
-      f"± {results[best_model_name]['cv_recall_std']:.3f}")
+# Find best model+feature set combo by CV recall
+best_fs, best_name, best_cv = None, None, -1
+for fs_name in feature_sets:
+    for name in base_models:
+        cv_mean = results[fs_name][name]['cv_recall_mean']
+        if cv_mean > best_cv:
+            best_cv, best_fs, best_name = cv_mean, fs_name, name
 
-print("\nTop 5 most important features (Random Forest):")
+r = results[best_fs][best_name]
+print(f"\nBest Model by CV Recall")
+print(f"  {best_name} [{best_fs}]")
+print(f"  Accuracy : {r['accuracy']:.3f}")
+print(f"  Precision: {r['precision']:.3f}")
+print(f"  Recall   : {r['recall']:.3f}")
+print(f"  F1       : {r['f1']:.3f}")
+print(f"  AUC      : {r['auc']:.3f}")
+print(f"  CV Recall: {r['cv_recall_mean']:.3f} ± {r['cv_recall_std']:.3f}")
+
+print("\nTop 5 most important features (Random Forest — Full):")
 for feat, score in importances.sort_values(ascending=False).head(5).items():
     print(f"  {feat:<30} {score:.4f}")
