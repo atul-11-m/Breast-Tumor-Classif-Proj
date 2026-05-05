@@ -13,7 +13,8 @@ from sklearn.model_selection import (
     train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
 )
 from sklearn.preprocessing import StandardScaler
-from sklearn.feature_selection import f_classif
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.svm import SVC
@@ -58,6 +59,54 @@ df['diagnosis'] = df['diagnosis'].map({'M': 1, 'B': 0})
 malignant = df[df['diagnosis'] == 1] #df filtered to only malignant entries
 benign = df[df['diagnosis'] == 0] # df filtered to only benign entries
 
+# plot of class distribution
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+axes[0].bar(['Benign', 'Malignant'], [len(benign), len(malignant)],
+            color=['steelblue', 'tomato'])
+axes[0].set_title('Class Distribution')
+axes[0].set_ylabel('Count')
+for i, v in enumerate([len(benign), len(malignant)]):
+    axes[0].text(i, v + 3, str(v), ha='center', fontweight='bold')
+
+key_features = ['radius_mean', 'texture_mean', 'area_mean', 'concavity_mean']
+groups = {feat: [benign[feat].values, malignant[feat].values] for feat in key_features} # intialize dict of feature values for benign and malignant for each key feature
+bp_data = [val for feat in key_features for val in groups[feat]] # flatten the values into a single list for boxplot input (output will be a list of 8 np arrays)
+positions = []
+labels = []
+for i, feat in enumerate(key_features):
+    base = i * 3 # each feature group is is separated by 3 positions
+    positions += [base + 1, base + 2] # add two x positions per feature
+    labels += [feat.replace('_mean', '')] # makes label cleaner by removing _mean
+
+bp = axes[1].boxplot(bp_data, positions=positions, patch_artist=True, widths=0.6)
+colors = ['steelblue', 'tomato'] * len(key_features)
+for patch, color in zip(bp['boxes'], colors):
+    patch.set_facecolor(color)
+axes[1].set_xticks([i * 3 + 1.5 for i in range(len(key_features))])
+axes[1].set_xticklabels(labels, rotation=15)
+axes[1].set_title('Key Features: Benign (blue) vs Malignant (red)')
+axes[1].set_ylabel('Value')
+
+plt.tight_layout()
+plt.savefig('eda_overview.png', dpi=150)
+plt.show()
+
+# Correlation heatmap (mean features only); shows how strong correlation is between each feature with benign/malignant diagnosis as well as with each other
+mean_features = [f for f in feature_names if f.endswith('_mean')] #extract mean features from feature list
+corr = df[mean_features + ['diagnosis']].corr()
+
+fig, ax = plt.subplots(figsize=(12, 10))
+im = ax.imshow(corr, cmap='coolwarm', vmin=-1, vmax=1)
+plt.colorbar(im, ax=ax)
+ax.set_xticks(range(len(corr.columns)))
+ax.set_yticks(range(len(corr.columns)))
+ax.set_xticklabels(corr.columns, rotation=45, ha='right', fontsize=8)
+ax.set_yticklabels(corr.columns, fontsize=8)
+ax.set_title('Correlation Matrix (Mean Features + Diagnosis)')
+plt.tight_layout()
+plt.savefig('correlation_heatmap.png', dpi=150)
+plt.show()
 
 # preprocessing the data for modeling
 X = df.drop('diagnosis', axis=1) # drop diagnosis column for feature df
@@ -71,7 +120,21 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
+# feature engineering: PCA + SelectKBest
 
+# use pca reduce to top 10 features since many features are highly correlated as seen in the correlation heatmap; imp b/c some models fit better with fewer features and can be compared to fit against full feature set
+pca = PCA(n_components=10, random_state=42)
+X_train_pca = pca.fit_transform(X_train_scaled)
+X_test_pca  = pca.transform(X_test_scaled)
+print(f"  Cumulative PCA variance: {pca.explained_variance_ratio_.sum():.3f}")
+
+# SelectKBest: keep top 15 features by using ANOVA F-score
+selector = SelectKBest(f_classif, k=15)
+X_train_kbest = selector.fit_transform(X_train_scaled, y_train)
+X_test_kbest  = selector.transform(X_test_scaled)
+selected_features = [feature_names[i] for i in selector.get_support(indices=True)]
+print(f"\n Top 15 Features via SelectKBest: ")
+print("  " + ", ".join(selected_features))
 
 # train and evaluate multiple models (with hyperparameter tuning for main ones)
 
@@ -143,9 +206,9 @@ for name, model in models.items():
         'cv_recall_std':  cv_scores.std(),
     }
 
-# evaluate all models
+# ── 5. EVALUATION ─────────────────────────────────────────────────────────────
 
-print("\n Model Performance (Test Set + 5-Fold CV Recall)")
+print("\n=== Model Performance (Test Set + 5-Fold CV Recall) ===")
 print(f"{'Model':<22} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>8} {'AUC':>8} {'CV Recall':>12}")
 print("-" * 84)
 for name, r in results.items():
@@ -159,8 +222,9 @@ for name, r in results.items():
     print(classification_report(y_test, r['y_pred'],
                                  target_names=['Benign', 'Malignant']))
 
-# visualize model results
-# confusion matrices (2 rows × 3 cols for 6 models)
+# ── 6. VISUALIZATION: Confusion Matrices + ROC Curves ────────────────────────
+
+# Confusion matrices (2 rows × 3 cols for 6 models)
 fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 axes = axes.flatten()
 for i, (name, r) in enumerate(results.items()):
@@ -215,8 +279,10 @@ for bar, val in zip(bars, cv_means):
 plt.tight_layout()
 plt.savefig('cv_recall_comparison.png', dpi=150)
 plt.show()
+print("Saved: cv_recall_comparison.png")
 
-# random forest feature importance (only doing for RF since it's the most interpretable model and has built-in feature importance)
+# ── 7. FEATURE IMPORTANCE (Random Forest) ────────────────────────────────────
+
 rf_model = results['Random Forest']['model']
 importances = pd.Series(rf_model.feature_importances_, index=feature_names)
 top20 = importances.sort_values(ascending=False).head(20)
@@ -230,7 +296,8 @@ plt.savefig('feature_importance.png', dpi=150)
 plt.show()
 print("Saved: feature_importance.png")
 
-#  summary statistics and insights
+# ── 8. SUMMARY ────────────────────────────────────────────────────────────────
+
 # Best by CV recall (more reliable than single split)
 best_model_name = max(results, key=lambda n: results[n]['cv_recall_mean'])
 print(f"\n=== Best Model by CV Recall ===")
