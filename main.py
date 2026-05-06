@@ -23,7 +23,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, roc_curve, auc, classification_report
+    confusion_matrix, classification_report
 )
 
 # loading the dataset
@@ -60,38 +60,7 @@ df['diagnosis'] = df['diagnosis'].map({'M': 1, 'B': 0})
 malignant = df[df['diagnosis'] == 1] #df filtered to only malignant entries
 benign = df[df['diagnosis'] == 0] # df filtered to only benign entries
 
-# plot of class distribution
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-axes[0].bar(['Benign', 'Malignant'], [len(benign), len(malignant)],
-            color=['steelblue', 'tomato'])
-axes[0].set_title('Class Distribution')
-axes[0].set_ylabel('Count')
-for i, v in enumerate([len(benign), len(malignant)]):
-    axes[0].text(i, v + 3, str(v), ha='center', fontweight='bold')
-
-key_features = ['radius_mean', 'texture_mean', 'area_mean', 'concavity_mean']
-groups = {feat: [benign[feat].values, malignant[feat].values] for feat in key_features} # intialize dict of feature values for benign and malignant for each key feature
-bp_data = [val for feat in key_features for val in groups[feat]] # flatten the values into a single list for boxplot input (output will be a list of 8 np arrays)
-positions = []
-labels = []
-for i, feat in enumerate(key_features):
-    base = i * 3 # each feature group is is separated by 3 positions
-    positions += [base + 1, base + 2] # add two x positions per feature
-    labels += [feat.replace('_mean', '')] # makes label cleaner by removing _mean
-
-bp = axes[1].boxplot(bp_data, positions=positions, patch_artist=True, widths=0.6)
-colors = ['steelblue', 'tomato'] * len(key_features)
-for patch, color in zip(bp['boxes'], colors):
-    patch.set_facecolor(color)
-axes[1].set_xticks([i * 3 + 1.5 for i in range(len(key_features))])
-axes[1].set_xticklabels(labels, rotation=15)
-axes[1].set_title('Key Features: Benign (blue) vs Malignant (red)')
-axes[1].set_ylabel('Value')
-
-plt.tight_layout()
-plt.savefig('eda_overview.png', dpi=150)
-plt.show()
 
 # Correlation heatmap (mean features only); shows how strong correlation is between each feature with benign/malignant diagnosis as well as with each other
 mean_features = [f for f in feature_names if f.endswith('_mean')] #extract mean features from feature list
@@ -127,7 +96,7 @@ X_test_scaled = scaler.transform(X_test)
 pca = PCA(n_components=10, random_state=42)
 X_train_pca = pca.fit_transform(X_train_scaled)
 X_test_pca  = pca.transform(X_test_scaled)
-print(f"  Cumulative PCA variance explained: {pca.explained_variance_ratio_.sum():.3f}")
+print(f"  Cumulative PCA variance: {pca.explained_variance_ratio_.sum():.3f}")
 
 # SelectKBest: keep top 15 features by ANOVA F-score
 selector = SelectKBest(f_classif, k=15)
@@ -197,45 +166,30 @@ for fs_name, (X_tr, X_te) in feature_sets.items():
         model = clone(base_model)  # fresh copy so fits don't bleed across feature sets
         model.fit(X_tr, y_train)
         y_pred = model.predict(X_te)
-        y_prob = model.predict_proba(X_te)[:, 1]
-        fpr, tpr, _ = roc_curve(y_test, y_prob)
         cv_scores = cross_val_score(model, X_tr, y_train, cv=cv, scoring='recall')
         results[fs_name][name] = {
             'model':          model,
             'y_pred':         y_pred,
-            'y_prob':         y_prob,
             'accuracy':       accuracy_score(y_test, y_pred),
             'precision':      precision_score(y_test, y_pred),
             'recall':         recall_score(y_test, y_pred),
             'f1':             f1_score(y_test, y_pred),
-            'fpr':            fpr,
-            'tpr':            tpr,
-            'auc':            auc(fpr, tpr),
             'cv_recall_mean': cv_scores.mean(),
             'cv_recall_std':  cv_scores.std(),
         }
         print(f"  {name:<22} recall={results[fs_name][name]['recall']:.3f}  "
-              f"auc={results[fs_name][name]['auc']:.3f}  "
               f"cv_recall={cv_scores.mean():.3f}±{cv_scores.std():.3f}")
 
 # evaluate all models
 
 for fs_name in feature_sets:
-    print(f"\nModel Performance — {fs_name} (Test Set + 5-Fold CV Recall)")
-    print(f"{'Model':<22} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>8} {'AUC':>8} {'CV Recall':>12}")
-    print("-" * 84)
+    print(f"\nModel Performance — {fs_name} ")
+    print(f"{'Model':<22} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>8} {'CV Recall':>12}")
+    print("-" * 76)
     for name, r in results[fs_name].items():
         print(f"{name:<22} {r['accuracy']:>10.3f} {r['precision']:>10.3f} "
-              f"{r['recall']:>10.3f} {r['f1']:>8.3f} {r['auc']:>8.3f} "
+              f"{r['recall']:>10.3f} {r['f1']:>8.3f} "
               f"  {r['cv_recall_mean']:.3f}±{r['cv_recall_std']:.3f}")
-
-print()
-for fs_name in feature_sets:
-    for name, r in results[fs_name].items():
-        print(f"\n{name} [{fs_name}]")
-        print(classification_report(y_test, r['y_pred'],
-                                    target_names=['Benign', 'Malignant']))
-
 
 model_names = list(base_models.keys())
 fs_names    = list(feature_sets.keys())
@@ -251,10 +205,10 @@ for row, fs_name in enumerate(fs_names):
         cm = confusion_matrix(y_test, r['y_pred'])
         im = ax.imshow(cm, cmap='Blues')
         ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
-        ax.set_xticklabels(['Benign', 'Mal.'], fontsize=7)
-        ax.set_yticklabels(['Benign', 'Mal.'], fontsize=7)
-        ax.set_xlabel('Predicted', fontsize=7); ax.set_ylabel('Actual', fontsize=7)
-        ax.set_title(f'{name}\n[{fs_name}] Acc={r["accuracy"]:.2f} Rec={r["recall"]:.2f}',
+        ax.set_xticklabels(['Pred. Benign', 'Pred. Malignant'], fontsize=7)
+        ax.set_yticklabels(['Actual Benign', 'Actual Malignant'], fontsize=7)
+        # ax.set_xlabel('Predicted', fontsize=7); ax.set_ylabel('Actual', fontsize=7)
+        ax.set_title(f'{name}\n{fs_name} feat set Acc.={r["accuracy"]:.2f} Rec.={r["recall"]:.2f}',
                      fontsize=8)
         for rr in range(2):
             for cc in range(2):
@@ -266,24 +220,6 @@ plt.savefig('confusion_matrices.png', dpi=150)
 plt.show()
 print("Saved: confusion_matrices.png")
 
-# ROC curves — one subplot per feature set
-fig, axes = plt.subplots(1, len(fs_names), figsize=(18, 6), sharey=True)
-plot_colors = ['steelblue', 'darkorange', 'green', 'purple', 'brown', 'crimson']
-for ax, fs_name in zip(axes, fs_names):
-    for name, color in zip(model_names, plot_colors):
-        r = results[fs_name][name]
-        ax.plot(r['fpr'], r['tpr'], color=color, lw=2,
-                label=f'{name} (AUC={r["auc"]:.3f})')
-    ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
-    ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
-    ax.set_xlabel('False Positive Rate')
-    ax.set_title(f'ROC Curves — {fs_name}')
-    ax.legend(loc='lower right', fontsize=7)
-axes[0].set_ylabel('True Positive Rate')
-plt.tight_layout()
-plt.savefig('roc_curves.png', dpi=150)
-plt.show()
-print("Saved: roc_curves.png")
 
 # CV Recall comparison: grouped bar chart (models × feature sets)
 fig, ax = plt.subplots(figsize=(13, 6))
@@ -314,6 +250,7 @@ print("Saved: cv_recall_comparison.png")
 rf_model = results['Full']['Random Forest']['model']
 importances = pd.Series(rf_model.feature_importances_, index=feature_names)
 top20 = importances.sort_values(ascending=False).head(20)
+bottomImportance = importances.sort_values(ascending=True).head(1)
 
 fig, ax = plt.subplots(figsize=(10, 7))
 top20.sort_values().plot(kind='barh', color='steelblue', ax=ax)
@@ -341,9 +278,12 @@ print(f"  Accuracy : {r['accuracy']:.3f}")
 print(f"  Precision: {r['precision']:.3f}")
 print(f"  Recall   : {r['recall']:.3f}")
 print(f"  F1       : {r['f1']:.3f}")
-print(f"  AUC      : {r['auc']:.3f}")
 print(f"  CV Recall: {r['cv_recall_mean']:.3f} ± {r['cv_recall_std']:.3f}")
 
 print("\nTop 5 most important features (Random Forest — Full):")
 for feat, score in importances.sort_values(ascending=False).head(5).items():
     print(f"  {feat:<30} {score:.4f}")
+
+print(f"\nLeast important feature: {bottomImportance.index[0]}")
+
+
