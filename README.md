@@ -1,6 +1,8 @@
 # Breast-Tumor-Classif-Proj
 
 Breast Cancer Detection Model
+Video Demo Link: https://youtu.be/Sh3fDBKXKL8
+
 Problem:
 According to the National Breast Cancer Foundation, 1 in 8 women in the United States will be diagnosed with breast cancer in their lifetime. Breast cancer is the second leading cause of cancer death in U.S. women, and it’s estimated that in 2026 alone, over 40,000 women in the country will die from breast cancer. As breast cancer rates have continued to rise over the past decade, it is important to raise awareness for early detection and the use of advanced technologies to help accurately detect cancerous tumors in the early stages, so treatment can be started as soon as possible, increasing a patient's chances of survival.  Biopsies are the most common way of detecting whether or not a tumor is cancerous or not. In this procedure, tissue from the tumor is removed and analyzed in a lab to see if the tissue contains cancer cells. However, there are some potential downsides to this procedure, such as being time-consuming, expensive, and unnecessary if the tumor is found to be benign or not cancerous.  Machine learning models can help in detecting whether or not a tumor found is cancerous or not by analyzing a tumor's size, shape, cell texture, radius, and perimeter measurements, and imaging patterns.
 
