@@ -39,6 +39,7 @@ feature_names = [
     'smoothness_extreme', 'compactness_extreme', 'concavity_extreme',
     'concave_points_extreme', 'symmetry_extreme', 'fractal_dimension_extreme'
 ] # this is needed b/c the dataset file has no header row, so must be assigned manually
+#_extreme is the mean of the 3 largest (most abnormal) values of that measurement across all nuclei in the sample.
 
 columns = ['id', 'diagnosis'] + feature_names
 df = pd.read_csv('wdbc.data', header=None, names=columns)
@@ -97,6 +98,7 @@ pca = PCA(n_components=10, random_state=42)
 X_train_pca = pca.fit_transform(X_train_scaled)
 X_test_pca  = pca.transform(X_test_scaled)
 print(f"  Cumulative PCA variance: {pca.explained_variance_ratio_.sum():.3f}")
+# each component is a linear combination of the original features, ordered so that component 1 captures the most variance, component 2 the next most, etc.
 
 # SelectKBest: keep top 15 features by ANOVA F-score
 selector = SelectKBest(f_classif, k=15)
@@ -218,7 +220,6 @@ for row, fs_name in enumerate(fs_names):
 plt.tight_layout()
 plt.savefig('confusion_matrices.png', dpi=150)
 plt.show()
-print("Saved: confusion_matrices.png")
 
 
 # CV Recall comparison: grouped bar chart (models × feature sets)
@@ -243,7 +244,6 @@ ax.legend(title='Feature Set')
 plt.tight_layout()
 plt.savefig('cv_recall_comparison.png', dpi=150)
 plt.show()
-print("Saved: cv_recall_comparison.png")
 
 # random forest feature importance (only doing for RF since it's the most interpretable model and has built-in feature importance)
 
@@ -259,7 +259,6 @@ ax.set_xlabel('Importance Score')
 plt.tight_layout()
 plt.savefig('feature_importance.png', dpi=150)
 plt.show()
-print("Saved: feature_importance.png")
 
 #  summary statistics and insights
 
